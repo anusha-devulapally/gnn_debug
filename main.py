@@ -1,134 +1,124 @@
 cd /home/labuser/anusha/gds_igb_baseline/gids_v4_spdk_parity_suite
 
-OUT=~/anusha/gnn-debug/gnn-debug/prefetch_debug_dump_20261014.txt
-
-mkdir -p ~/anusha/gnn-debug/gnn-debug
-
-{
-echo "========== DATE =========="
-date
-
-echo
-echo "========== ACTIVE DIRECTORY =========="
-pwd
-
-echo
-echo "========== CONFIRM SPLIT WORKER BINARY =========="
-strings gids_v4_spdk_worker | grep -E \
-'V4_SPLIT_DEMAND_DAX|V4_SPLIT_PREFETCH_DRAM|NUMA0_DRAM_CONTROL' \
-|| true
-
-echo
-echo "========== PREFETCH SCATTER CALL SITES =========="
-
-python3 - <<'PY'
+python3 - <<'PY' > /tmp/prefetch_lifecycle_report.txt
 from pathlib import Path
+import re
 
-p = Path("gids_v4_spdk_parity.cu")
-lines = p.read_text().splitlines()
+files = {
+    "CUDA": Path("gids_v4_spdk_parity.cu"),
+    "WORKER": Path("gids_v4_spdk_worker.c"),
+}
 
-keys = [
-    "scatter_prefetch_explicit(",
-    "pf_slots",
-    "prefetch_slot",
-    "PREFETCH_READY",
-    "PF_READY",
-    "PF_CONSUMING",
-    "prefetch_page",
-]
+patterns = {
+    "CUDA": [
+        # State definitions / transitions
+        r'PF_[A-Z_]+',
+        r'PREFETCH_[A-Z_]+',
+        r'prefetch.*state',
+        r'state.*prefetch',
 
-hits = []
+        # Slot -> page bookkeeping
+        r'prefetch.*slot',
+        r'slot.*prefetch',
+        r'prefetch.*page',
+        r'page.*prefetch',
 
-for i, line in enumerate(lines):
-    if any(k in line for k in keys):
-        hits.append(i)
+        # Request submission / completion consumption
+        r'prefetch.*enqueue',
+        r'prefetch.*complete',
+        r'prefetch.*ready',
+        r'prefetch.*consume',
+        r'inflight',
 
-shown = set()
+        # Actual use / release
+        r'scatter_prefetch_explicit',
+        r'pf_slots',
+        r'free.*slot',
+        r'release.*slot',
+        r'slot.*free',
 
-for i in hits:
-    lo = max(0, i - 35)
-    hi = min(len(lines), i + 55)
+        # Synchronization
+        r'atomic',
+        r'memory_order',
+        r'fence',
+    ],
 
-    key = (lo, hi)
+    "WORKER": [
+        # Request fields
+        r'prefetch',
+        r'PREFETCH',
 
-    if key in shown:
-        continue
+        # Slot + SSD offset association
+        r'slot',
+        r'offset',
+        r'lba',
 
-    shown.add(key)
+        # Submission/completion
+        r'bdev.*read',
+        r'spdk_bdev_read',
+        r'io_complete',
+        r'completion',
+        r'complete',
 
-    print("\n" + "=" * 90)
-    print(f"LINES {lo+1}-{hi}")
-    print("=" * 90)
+        # Request struct / protocol
+        r'struct .*req',
+        r'struct .*cmd',
+        r'OP_',
+    ],
+}
 
-    for j in range(lo, hi):
-        print(f"{j+1:5d}: {lines[j]}")
+for label, path in files.items():
+    lines = path.read_text(errors="replace").splitlines()
+
+    print()
+    print("=" * 100)
+    print(label, path)
+    print("=" * 100)
+
+    hits = []
+
+    for i, line in enumerate(lines):
+        if any(re.search(p, line, re.I) for p in patterns[label]):
+            hits.append(i)
+
+    # Merge nearby matches to avoid giant repetitive output.
+    ranges = []
+
+    for i in hits:
+        lo = max(0, i - 3)
+        hi = min(len(lines), i + 4)
+
+        if ranges and lo <= ranges[-1][1] + 2:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], hi))
+        else:
+            ranges.append((lo, hi))
+
+    # Limit to keep report manageable.
+    for lo, hi in ranges[:35]:
+        print(f"\n--- lines {lo+1}-{hi} ---")
+        for j in range(lo, hi):
+            print(f"{j+1:5d}: {lines[j]}")
+
+print()
+print("=" * 100)
+print("ACTIVE VARIANT")
+print("=" * 100)
+
+cu = files["CUDA"].read_text(errors="replace")
+wk = files["WORKER"].read_text(errors="replace")
+
+for x in [
+    "SPDK_BDEV_AIO_DRAM_INGRESS_COHERENT_H2D_DAX_GPU",
+    "V4_DRAM_PREFETCH_COHERENT_STAGE",
+    "V4_SPLIT_DEMAND_DAX_MAP_PASS",
+    "V4_SPLIT_PREFETCH_DRAM_MAP_PASS",
+]:
+    print(f"{x}: {'YES' if (x in cu or x in wk) else 'NO'}")
 PY
 
-echo
-echo "========== WORKER PREFETCH REQUEST / COMPLETION =========="
+wc -l /tmp/prefetch_lifecycle_report.txt
+cat /tmp/prefetch_lifecycle_report.txt
 
-python3 - <<'PY'
-from pathlib import Path
-
-p = Path("gids_v4_spdk_worker.c")
-lines = p.read_text().splitlines()
-
-keys = [
-    "prefetch",
-    "PREFETCH",
-    "slot",
-    "offset",
-    "lba",
-    "io_complete",
-    "bdev_read",
-    "spdk_bdev_read",
-]
-
-hits = []
-
-for i, line in enumerate(lines):
-    if any(k in line for k in keys):
-        hits.append(i)
-
-ranges = []
-
-for i in hits:
-    lo = max(0, i - 20)
-    hi = min(len(lines), i + 35)
-
-    if ranges and lo <= ranges[-1][1] + 10:
-        ranges[-1] = (
-            ranges[-1][0],
-            max(ranges[-1][1], hi)
-        )
-    else:
-        ranges.append((lo, hi))
-
-for lo, hi in ranges:
-    print("\n" + "=" * 90)
-    print(f"LINES {lo+1}-{hi}")
-    print("=" * 90)
-
-    for j in range(lo, hi):
-        print(f"{j+1:5d}: {lines[j]}")
-PY
-
-} 2>&1 | tee "$OUT"
-
-echo
-echo "SAVED OUTPUT TO:"
-echo "$OUT"
-
-cd ~/anusha/gnn-debug/gnn-debug
-
-git status --short
-
-git add prefetch_debug_dump_20261014.txt
-
-if ! git diff --cached --quiet; then
-    git commit -m "Add prefetch slot debug dump"
-else
-    echo "No new changes to commit"
-fi
-
-git push
+grep -nEi \
+'PF_|prefetch.*state|state.*prefetch|prefetch.*slot|slot.*prefetch|prefetch.*page|page.*prefetch|READY|CONSUM|FREE|scatter_prefetch|io_complete|completion|bdev.*read|offset|lba|atomic|memory_order' \
+/tmp/prefetch_lifecycle_report.txt
