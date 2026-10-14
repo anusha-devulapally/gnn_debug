@@ -1,5 +1,18 @@
 cd /home/labuser/anusha/gds_igb_baseline/gids_v4_spdk_parity_suite
 
+OUT=~/anusha/gnn-debug/gnn-debug/prefetch_debug_dump_20261014.txt
+
+mkdir -p ~/anusha/gnn-debug/gnn-debug
+
+{
+echo "========== DATE =========="
+date
+
+echo
+echo "========== ACTIVE DIRECTORY =========="
+pwd
+
+echo
 echo "========== CONFIRM SPLIT WORKER BINARY =========="
 strings gids_v4_spdk_worker | grep -E \
 'V4_SPLIT_DEMAND_DAX|V4_SPLIT_PREFETCH_DRAM|NUMA0_DRAM_CONTROL' \
@@ -37,8 +50,10 @@ for i in hits:
     hi = min(len(lines), i + 55)
 
     key = (lo, hi)
+
     if key in shown:
         continue
+
     shown.add(key)
 
     print("\n" + "=" * 90)
@@ -75,7 +90,6 @@ for i, line in enumerate(lines):
     if any(k in line for k in keys):
         hits.append(i)
 
-# merge nearby hits so output isn't enormous
 ranges = []
 
 for i in hits:
@@ -98,3 +112,23 @@ for lo, hi in ranges:
     for j in range(lo, hi):
         print(f"{j+1:5d}: {lines[j]}")
 PY
+
+} 2>&1 | tee "$OUT"
+
+echo
+echo "SAVED OUTPUT TO:"
+echo "$OUT"
+
+cd ~/anusha/gnn-debug/gnn-debug
+
+git status --short
+
+git add prefetch_debug_dump_20261014.txt
+
+if ! git diff --cached --quiet; then
+    git commit -m "Add prefetch slot debug dump"
+else
+    echo "No new changes to commit"
+fi
+
+git push
